@@ -77,7 +77,11 @@ def process_with_dask(file_path):
     try:
         # Read the file lazily with Dask
         ddf = dd.read_csv(
-            file_path, sample=10_000_000, assume_missing=True, on_bad_lines="skip"
+            file_path,
+            sample=10_000_000,
+            blocksize="64MB",
+            assume_missing=True,
+            on_bad_lines="skip",
         )
 
         # Drop rows with null values in 'Sample'
@@ -125,11 +129,11 @@ def preprocess_and_combine(
 
     # Combine extracted ages
     # all_ages = pd.concat([ages_27k, ages_450k], axis=0).drop_duplicates(subset="Sample").reset_index(drop=True)
-    all_ages = pd.read_csv("../data/ages.csv")
+    all_ages = pd.read_csv("data/ages.csv")
     print(f"Extracted {len(all_ages)} unique ages.")
 
     # Save the extracted ages to a file
-    ages_output_path = "../data/ages.csv"
+    ages_output_path = "data/ages.csv"
     all_ages.to_csv(ages_output_path, index=False)
     print(f"Ages saved to: {ages_output_path}")
 
@@ -138,17 +142,12 @@ def preprocess_and_combine(
     combined_450k_ddf = process_with_dask(output_450k)
     combined_27k_ddf = process_with_dask(output_27k)
 
-    # Debug: Check if datasets were loaded
-    # print(f"27k dataset size: {len(combined_27k_ddf.columns)} columns, {len(combined_27k_ddf)} rows (Dask LazyFrame)")
-    # print(
-    # f"450k dataset size: {len(combined_450k_ddf.columns)} columns, {len(combined_450k_ddf)} rows (Dask LazyFrame)")
-
     # Find common probes
     print("Finding common probes...")
 
     combined_27k_ddf_index = combined_27k_ddf.index.to_frame(name="probe_27k")
     combined_450k_ddf_index = combined_450k_ddf.index.to_frame(name="probe_450k")
-
+    
     with ProgressBar():
         common_probes = (
             dd.merge(
@@ -170,16 +169,17 @@ def preprocess_and_combine(
 
     # Concatenate datasets by probes
     print("Concatenating datasets...")
-    combined_data_ddf = dd.concat([combined_27k_ddf, combined_450k_ddf], axis=1)
+    combined_data_ddf = dd.concat(
+        [combined_27k_ddf, combined_450k_ddf], axis=1
+    )
 
     # Ensure valid sample names and alignment
     valid_samples = [
         sample.strip('"').strip() for sample in all_ages["Sample"].tolist()
     ]
-    combined_data_ddf = combined_data_ddf[valid_samples]
 
     # Transpose data
-    aligned_data_ddf = combined_data_ddf.T
+    aligned_data_ddf = combined_data_ddf[valid_samples].T
     aligned_data_ddf["Age"] = all_ages.set_index("Sample").loc[
         aligned_data_ddf.index, "Age"
     ]
@@ -187,7 +187,7 @@ def preprocess_and_combine(
     # Impute missing values with column means
     with ProgressBar():
         means = aligned_data_ddf.mean().compute()
-    aligned_data_ddf = aligned_data_ddf.fillna(means)
+        aligned_data_ddf = aligned_data_ddf.fillna(means)
 
     # Save the final processed dataset
     print("Saving final dataset...")
@@ -197,23 +197,27 @@ def preprocess_and_combine(
 
 def main():
     # Input directories for the datasets
-    folder_27k = "../data/27k"
-    folder_450k = "../data/450k"
+    folder_27k = "data/27k"
+    folder_450k = "data/450k"
 
     # Output files
-    output_27k = "../data/combined_27k.csv"
-    output_450k = "../data/combined_450k.csv"
-    final_output = "../data/final_methylation.csv"
+    output_27k = "data/combined_27k.csv"
+    output_450k = "data/combined_450k.csv"
+    final_output = "data/final_methylation.csv"
 
     cluster = LocalCluster()
     client = Client(cluster)
 
     print(f"Dask LocalCluster running at: {client.dashboard_link}")
 
-    # Preprocess and combine datasets
-    preprocess_and_combine(
-        folder_27k, folder_450k, output_27k, output_450k, final_output
-    )
+    try:
+        # Preprocess and combine datasets
+        preprocess_and_combine(
+            folder_27k, folder_450k, output_27k, output_450k, final_output
+        )
+    finally:
+        client.close()
+        cluster.close()
 
 
 # Ensure this script only runs when executed directly (not when imported)
